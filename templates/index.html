@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CyberTriage Agent — Explainability Dashboard</title>
+
+  <!-- Cytoscape.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js"></script>
+  <!-- Cytoscape layout: dagre -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+
+  <style>
+    /* ── Reset & Base ──────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --accent:    #58a6ff;
+      --danger:    #f85149;
+      --warn:      #e3b341;
+      --success:   #3fb950;
+      --purple:    #bc8cff;
+      --text:      #c9d1d9;
+      --text-muted:#8b949e;
+      --font: 'Segoe UI', system-ui, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Topbar ────────────────────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+      z-index: 100;
+    }
+
+    header .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+
+    header .logo svg { flex-shrink: 0; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-idle    { background: rgba(139,148,158,.15); color: var(--text-muted); border: 1px solid var(--border); }
+    .badge-running { background: rgba(88,166,255,.15);  color: var(--accent);     border: 1px solid var(--accent); }
+    .badge-done    { background: rgba(63,185,80,.15);   color: var(--success);    border: 1px solid var(--success);}
+    .badge-error   { background: rgba(248,81,73,.15);   color: var(--danger);     border: 1px solid var(--danger); }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
+    }
+
+    .controls input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      color: var(--text);
+      font-size: 0.85rem;
+      width: 150px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .controls input:focus { border-color: var(--accent); }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 16px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: opacity .2s, transform .1s;
+    }
+    button:active { transform: scale(0.97); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-primary { background: var(--accent);   color: #0d1117; }
+    .btn-ghost   { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+    .btn-danger  { background: var(--danger);   color: #fff; }
+    .btn-sm      { padding: 4px 10px; font-size: 0.75rem; }
+
+    /* ── Main Layout ───────────────────────────────────────────────────────── */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Graph Panel ───────────────────────────────────────────────────────── */
+    #graph-panel {
+      flex: 1;
+      position: relative;
+      background: radial-gradient(ellipse at 50% 50%, #0f1923 0%, var(--bg) 100%);
+    }
+
+    #cy {
+      width: 100%;
+      height: 100%;
+    }
+
+    #graph-overlay {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .legend-card {
+      background: rgba(22,27,34,.9);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.75rem;
+      pointer-events: all;
+    }
+
+    .legend-card h4 { color: var(--text-muted); margin-bottom: 6px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: .5px; }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 3px 0;
+    }
+
+    .legend-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .graph-actions {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      display: flex;
+      gap: 6px;
+    }
+
+    /* ── Tooltip ───────────────────────────────────────────────────────────── */
+    #tooltip {
+      position: absolute;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.78rem;
+      max-width: 280px;
+      pointer-events: none;
+      z-index: 200;
+      display: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    }
+    #tooltip h4 { color: var(--accent); margin-bottom: 6px; font-size: 0.82rem; }
+    #tooltip .kv { display: flex; gap: 8px; margin: 2px 0; }
+    #tooltip .k  { color: var(--text-muted); flex-shrink: 0; }
+    #tooltip .v  { color: var(--text); word-break: break-all; }
+
+    /* ── Sidebar ───────────────────────────────────────────────────────────── */
+    #sidebar {
+      width: 380px;
+      flex-shrink: 0;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sidebar-header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .sidebar-header h2 {
+      font-size: 0.9rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sidebar-header h2 span.icon { font-size: 1rem; }
+
+    /* ── Stats Bar ─────────────────────────────────────────────────────────── */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .stat {
+      padding: 10px 12px;
+      border-right: 1px solid var(--border);
+      text-align: center;
+    }
+    .stat:last-child { border-right: none; }
+    .stat .val { font-size: 1.3rem; font-weight: 700; color: var(--accent); }
+    .stat .lbl { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
+
+    /* ── Confidence Meter ──────────────────────────────────────────────────── */
+    .confidence-section {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .confidence-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      margin-bottom: 6px;
+    }
+
+    .confidence-label .title { color: var(--text-muted); }
+    .confidence-label .val   { font-weight: 700; }
+
+    .confidence-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .confidence-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.5s ease, background-color 0.5s ease;
+      background: var(--text-muted);
+    }
+
+    /* ── Trace List ────────────────────────────────────────────────────────── */
+    .trace-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      scroll-behavior: smooth;
+    }
+
+    .trace-container::-webkit-scrollbar { width: 4px; }
+    .trace-container::-webkit-scrollbar-track { background: transparent; }
+    .trace-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .trace-step {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+      animation: fadeIn .3s ease;
+    }
+
+    @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+
+    .step-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.85rem;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .step-body { flex: 1; min-width: 0; }
+
+    .step-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 3px;
+      flex-wrap: wrap;
+    }
+
+    .step-type {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+
+    .step-time { font-size: 0.65rem; color: var(--text-muted); margin-left: auto; }
+
+    .step-content {
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    .step-cypher {
+      margin-top: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 8px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 0.7rem;
+      color: var(--purple);
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+
+    .step-result-toggle {
+      margin-top: 4px;
+      font-size: 0.7rem;
+      color: var(--accent);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .step-result-json {
+      display: none;
+      margin-top: 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Step type colours */
+    .type-reasoning { background: rgba(88,166,255,.15); color: var(--accent); }
+    .type-tool_call { background: rgba(188,140,255,.15); color: var(--purple); }
+    .type-tool_result { background: rgba(63,185,80,.15); color: var(--success); }
+    .type-action    { background: rgba(248,81,73,.15); color: var(--danger); }
+    .type-verdict   { background: rgba(227,179,65,.15); color: var(--warn); }
+
+    .icon-reasoning  { background: rgba(88,166,255,.2); }
+    .icon-tool_call  { background: rgba(188,140,255,.2); }
+    .icon-tool_result{ background: rgba(63,185,80,.2);  }
+    .icon-action     { background: rgba(248,81,73,.2);  }
+    .icon-verdict    { background: rgba(227,179,65,.2); }
+
+    /* ── Verdict Banner ─────────────────────────────────────────────────────── */
+    #verdict-banner {
+      display: none;
+      padding: 10px 16px;
+      text-align: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+      letter-spacing: .5px;
+    }
+
+    .verdict-confirmed { background: rgba(248,81,73,.2); color: var(--danger); border-top-color: var(--danger); }
+    .verdict-unconfirmed { background: rgba(63,185,80,.15); color: var(--success); border-top-color: var(--success); }
+
+    /* ── Empty state ────────────────────────────────────────────────────────── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 10px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .empty-state .icon { font-size: 2.5rem; }
+
+    /* ── Hop Path Visualiser ────────────────────────────────────────────────── */
+    #hop-path {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: none;
+      flex-shrink: 0;
+    }
+
+    #hop-path h4 { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+
+    .hop-chain {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+      font-size: 0.73rem;
+    }
+
+    .hop-node {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 2px 8px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .hop-node.highlighted { border-color: var(--accent); color: var(--accent); }
+    .hop-arrow { color: var(--text-muted); }
+
+    /* ── Scrollbar ───────────────────────────────────────────────────────────── */
+    * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ───────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+    CyberTriage <span style="color:var(--text-muted);font-weight:400;font-size:.9rem;">| Autonomous Security Agent</span>
+  </div>
+
+  <span id="status-badge" class="badge badge-idle">● Idle</span>
+
+  <div class="controls">
+    <input id="alert-input" type="text" value="ALERT-001" placeholder="Alert ID" />
+    <button class="btn-primary" id="btn-trigger">▶ Investigate</button>
+    <button class="btn-ghost" id="btn-refresh-graph">↺ Graph</button>
+    <button class="btn-ghost btn-sm" id="btn-clear">Clear</button>
+  </div>
+</header>
+
+<!-- ── Main ─────────────────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- Graph Panel -->
+  <div id="graph-panel">
+    <div id="cy"></div>
+
+    <!-- Legend -->
+    <div id="graph-overlay">
+      <div class="legend-card">
+        <h4>Node Types</h4>
+        <div class="legend-item"><div class="legend-dot" style="background:#f85149"></div> IP Address</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div> Device</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div> User</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div> Service</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#e3b341"></div> Security Alert</div>
+      </div>
+      <div class="legend-card">
+        <h4>Highlight</h4>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:#ff7b72;border:2px solid #ff7b72;box-shadow:0 0 6px #ff7b72"></div>
+          Agent-touched node
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="width:10px;height:4px;border-radius:2px;background:#f85149"></div>
+          Isolated / Revoked
+        </div>
+      </div>
+    </div>
+
+    <!-- Graph action buttons -->
+    <div class="graph-actions">
+      <button class="btn-ghost btn-sm" id="btn-fit">⊡ Fit</button>
+      <button class="btn-ghost btn-sm" id="btn-layout">⟳ Layout</button>
+    </div>
+
+    <!-- Tooltip -->
+    <div id="tooltip"></div>
+  </div>
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <h2><span class="icon">🧠</span> Agent Reasoning</h2>
+      <span id="step-count" style="font-size:.75rem;color:var(--text-muted)">0 steps</span>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-bar">
+      <div class="stat">
+        <div class="val" id="stat-nodes">0</div>
+        <div class="lbl">Nodes</div>
+      </div>
+      <div class="stat">
+        <div class="val" id="stat-edges">0</div>
+        <div class="lbl">Edges</div>
+      </div>
+      <div class="stat">
+        <div class="val" id="stat-hops">0</div>
+        <div class="lbl">Hops</div>
+      </div>
+    </div>
+
+    <!-- Confidence meter -->
+    <div class="confidence-section">
+      <div class="confidence-label">
+        <span class="title">Threat Confidence</span>
+        <span class="val" id="conf-val">50%</span>
+      </div>
+      <div class="confidence-bar">
+        <div class="confidence-fill" id="conf-fill" style="width:50%"></div>
+      </div>
+    </div>
+
+    <!-- Hop path -->
+    <div id="hop-path">
+      <h4>🔗 Attack Path</h4>
+      <div class="hop-chain" id="hop-chain"></div>
+    </div>
+
+    <!-- Trace -->
+    <div class="trace-container" id="trace-list">
+      <div class="empty-state">
+        <div class="icon">🛡️</div>
+        <div>No investigation running.</div>
+        <div style="color:var(--text-muted);font-size:.78rem">Enter an Alert ID and click <strong>Investigate</strong>.</div>
+      </div>
+    </div>
+
+    <!-- Verdict Banner -->
+    <div id="verdict-banner"></div>
+  </div>
+</div>
+
+<!-- ── JavaScript ────────────────────────────────────────────────────────────── -->
+<script>
+const API = '';   // Same origin
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let cy = null;
+let currentEventSource = null;
+let stepCount = 0;
+let maxHop = 0;
+let attackPathNodes = [];
+
+// ── Cytoscape Init ─────────────────────────────────────────────────────────────
+function initCytoscape(elements) {
+  if (cy) cy.destroy();
+
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: elements,
+    style: [
+      // Default node
+      {
+        selector: 'node',
+        style: {
+          'width': 42,
+          'height': 42,
+          'background-color': '#30363d',
+          'border-width': 2,
+          'border-color': '#484f58',
+          'label': 'data(label)',
+          'font-size': 9,
+          'color': '#c9d1d9',
+          'text-valign': 'bottom',
+          'text-halign': 'center',
+          'text-margin-y': 4,
+          'text-wrap': 'ellipsis',
+          'text-max-width': 90,
+          'text-background-color': 'rgba(13,17,23,.7)',
+          'text-background-opacity': 1,
+          'text-background-padding': '2px',
+          'text-background-shape': 'roundrectangle',
+          'overlay-padding': 4,
+          'transition-property': 'border-color, border-width, background-color, width, height',
+          'transition-duration': '300ms',
+        }
+      },
+      // Node types
+      { selector: 'node[type="IP_Address"]',      style: { 'background-color': '#f85149', 'border-color': '#ff7b72', 'shape': 'hexagon' } },
+      { selector: 'node[type="Device"]',           style: { 'background-color': '#1d4ed8', 'border-color': '#58a6ff', 'shape': 'roundrectangle' } },
+      { selector: 'node[type="User"]',             style: { 'background-color': '#166534', 'border-color': '#3fb950', 'shape': 'ellipse' } },
+      { selector: 'node[type="Service"]',          style: { 'background-color': '#581c87', 'border-color': '#bc8cff', 'shape': 'diamond' } },
+      { selector: 'node[type="Security_Alert"]',   style: { 'background-color': '#92400e', 'border-color': '#e3b341', 'shape': 'star' } },
+      // Highlighted (agent-touched)
+      {
+        selector: 'node[?highlighted]',
+        style: {
+          'border-width': 3,
+          'border-color': '#ff7b72',
+          'box-shadow': '0 0 12px 4px rgba(255,123,114,.5)',
+          'width': 52,
+          'height': 52,
+        }
+      },
+      // Isolated / Revoked status
+      {
+        selector: 'node[status="Isolated"], node[auth_status="revoked"]',
+        style: {
+          'background-color': '#450a0a',
+          'border-color': '#f85149',
+          'border-width': 3,
+          'border-style': 'dashed',
+        }
+      },
+      // Edges
+      {
+        selector: 'edge',
+        style: {
+          'width': 1.5,
+          'line-color': '#30363d',
+          'target-arrow-color': '#30363d',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'label': 'data(label)',
+          'font-size': 8,
+          'color': '#8b949e',
+          'text-rotation': 'autorotate',
+          'text-background-color': 'rgba(13,17,23,.7)',
+          'text-background-opacity': 1,
+          'text-background-padding': '1px',
+          'edge-text-rotation': 'autorotate',
+          'transition-property': 'line-color, width',
+          'transition-duration': '300ms',
+        }
+      },
+      {
+        selector: 'edge.highlighted',
+        style: {
+          'line-color': '#ff7b72',
+          'target-arrow-color': '#ff7b72',
+          'width': 3,
+        }
+      },
+      // Selected
+      { selector: ':selected', style: { 'border-color': '#e3b341', 'border-width': 3 } },
+    ],
+    layout: { name: 'dagre', rankDir: 'LR', padding: 40, nodeSep: 50, rankSep: 100 },
+    wheelSensitivity: 0.3,
+    minZoom: 0.2,
+    maxZoom: 3,
+  });
+
+  // ── Tooltip ─────────────────────────────────────────────────────────────────
+  const tooltip = document.getElementById('tooltip');
+  cy.on('mouseover', 'node', function(e) {
+    const d = e.target.data();
+    const pos = e.renderedPosition;
+    const exclude = ['id','label','type','highlighted'];
+    const rows = Object.entries(d)
+      .filter(([k]) => !exclude.includes(k))
+      .map(([k,v]) => `<div class="kv"><span class="k">${k}:</span><span class="v">${JSON.stringify(v)}</span></div>`)
+      .join('');
+    tooltip.innerHTML = `<h4>${d.label || d.id} <span style="font-size:.7rem;color:var(--text-muted)">(${d.type})</span></h4>${rows}`;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (pos.x + 20) + 'px';
+    tooltip.style.top  = (pos.y + 20) + 'px';
+  });
+  cy.on('mouseout',  'node', () => tooltip.style.display = 'none');
+  cy.on('tap', () => tooltip.style.display = 'none');
+}
+
+// ── Load Graph ────────────────────────────────────────────────────────────────
+async function loadGraph() {
+  try {
+    const res  = await fetch(`${API}/graph_state`);
+    const data = await res.json();
+    const elements = [
+      ...data.nodes.map(n => ({ data: n.data })),
+      ...data.edges.map(e => ({ data: e.data })),
+    ];
+    initCytoscape(elements);
+    document.getElementById('stat-nodes').textContent = data.meta.node_count;
+    document.getElementById('stat-edges').textContent = data.meta.edge_count;
+  } catch(err) {
+    console.error('loadGraph failed:', err);
+  }
+}
+
+// ── Highlight touched nodes ────────────────────────────────────────────────────
+function highlightNodes(nodeIds, edgeLabels) {
+  if (!cy) return;
+  cy.nodes().forEach(n => {
+    n.data('highlighted', nodeIds.includes(n.id()));
+  });
+  cy.edges().forEach(e => {
+    if (nodeIds.includes(e.source().id()) && nodeIds.includes(e.target().id())) {
+      e.addClass('highlighted');
+    } else {
+      e.removeClass('highlighted');
+    }
+  });
+}
+
+// ── Confidence ────────────────────────────────────────────────────────────────
+function setConfidence(val) {
+  const pct = Math.round(val * 100);
+  document.getElementById('conf-val').textContent  = pct + '%';
+  const fill = document.getElementById('conf-fill');
+  fill.style.width = pct + '%';
+  if (pct >= 80) {
+    fill.style.background = 'var(--danger)';
+    document.getElementById('conf-val').style.color = 'var(--danger)';
+  } else if (pct >= 60) {
+    fill.style.background = 'var(--warn)';
+    document.getElementById('conf-val').style.color = 'var(--warn)';
+  } else {
+    fill.style.background = 'var(--accent)';
+    document.getElementById('conf-val').style.color = 'var(--accent)';
+  }
+}
+
+// ── Status badge ──────────────────────────────────────────────────────────────
+function setStatus(s) {
+  const b = document.getElementById('status-badge');
+  b.className = 'badge';
+  const map = {
+    idle:    ['badge-idle',    '● Idle'],
+    running: ['badge-running', '⟳ Running'],
+    done:    ['badge-done',    '✓ Complete'],
+    error:   ['badge-error',   '✗ Error'],
+  };
+  const [cls, txt] = map[s] || map.idle;
+  b.classList.add(cls);
+  b.textContent = txt;
+}
+
+// ── Hop path visualiser ───────────────────────────────────────────────────────
+function addHopNode(label, isNew) {
+  const chain = document.getElementById('hop-chain');
+  if (attackPathNodes.includes(label)) return;
+  attackPathNodes.push(label);
+  if (chain.children.length > 0) {
+    const arrow = document.createElement('span');
+    arrow.className = 'hop-arrow';
+    arrow.textContent = '→';
+    chain.appendChild(arrow);
+  }
+  const node = document.createElement('span');
+  node.className = 'hop-node' + (isNew ? ' highlighted' : '');
+  node.textContent = label;
+  chain.appendChild(node);
+  document.getElementById('hop-path').style.display = 'block';
+}
+
+// ── Trace step renderer ───────────────────────────────────────────────────────
+const TYPE_ICONS = {
+  reasoning:   { icon: '💭', cls: 'icon-reasoning' },
+  tool_call:   { icon: '🔧', cls: 'icon-tool_call'  },
+  tool_result: { icon: '📊', cls: 'icon-tool_result' },
+  action:      { icon: '⚡', cls: 'icon-action'      },
+  verdict:     { icon: '🏁', cls: 'icon-verdict'     },
+};
+
+function renderTraceStep(step) {
+  const list = document.getElementById('trace-list');
+  if (list.querySelector('.empty-state')) list.innerHTML = '';
+
+  const type  = step.type || 'reasoning';
+  const meta  = TYPE_ICONS[type] || TYPE_ICONS.reasoning;
+  const ts    = step.timestamp ? new Date(step.timestamp).toLocaleTimeString() : '';
+
+  const div = document.createElement('div');
+  div.className = 'trace-step';
+  div.innerHTML = `
+    <div class="step-icon ${meta.cls}">${meta.icon}</div>
+    <div class="step-body">
+      <div class="step-meta">
+        <span class="step-type type-${type}">${type.replace('_',' ')}</span>
+        ${step.tool_name ? `<span style="font-size:.7rem;color:var(--purple)">⬡ ${step.tool_name}</span>` : ''}
+        ${step.hop !== undefined ? `<span style="font-size:.7rem;color:var(--text-muted)">Hop ${step.hop}</span>` : ''}
+        <span class="step-time">${ts}</span>
+      </div>
+      <div class="step-content">${escHtml(step.content || '')}</div>
+      ${step.cypher_query ? `
+        <div class="step-cypher">${escHtml(step.cypher_query.trim())}</div>
+      ` : ''}
+      ${step.tool_result ? `
+        <div class="step-result-toggle" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.textContent = this.textContent.includes('▼') ? '▶ Show result' : '▼ Hide result'">▶ Show result</div>
+        <div class="step-result-json">${escHtml(JSON.stringify(step.tool_result, null, 2))}</div>
+      ` : ''}
+    </div>
+  `;
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+  stepCount++;
+  document.getElementById('step-count').textContent = stepCount + ' steps';
+
+  // Update confidence if present
+  if (step.confidence !== undefined) setConfidence(step.confidence);
+
+  // Update hops
+  if (step.hop !== undefined && step.hop > maxHop) {
+    maxHop = step.hop;
+    document.getElementById('stat-hops').textContent = maxHop;
+  }
+
+  // Highlight nodes
+  if (step.nodes_involved && step.nodes_involved.length) {
+    highlightNodes(step.nodes_involved, []);
+  }
+
+  // Build hop path from tool results
+  if (step.tool_result) {
+    const r = step.tool_result;
+    if (r.alert) addHopNode(r.alert.alert_id || 'Alert', false);
+    for (const src of (r.triggering_sources || [])) {
+      const addr = src.source_properties?.address || src.source_properties?.id;
+      if (addr) addHopNode(addr, true);
+    }
+    for (const path of (r.traversal_paths || [])) {
+      const t = path.target;
+      if (t) addHopNode(t.properties?.hostname || t.properties?.name || t.id, true);
+    }
+    for (const svc of (r.services_accessed || [])) {
+      addHopNode(svc.service?.name || svc.service?.id, true);
+    }
+    if (r.action === 'ISOLATE')        addHopNode(`🔒 ${r.device?.hostname || r.device_id}`, true);
+    if (r.action === 'REVOKE_TOKENS')  addHopNode(`🚫 ${r.user?.username || r.user_id}`, true);
+  }
+}
+
+// ── Verdict banner ─────────────────────────────────────────────────────────────
+function showVerdict(verdict, confidence) {
+  const banner = document.getElementById('verdict-banner');
+  banner.style.display = 'block';
+  if (verdict === 'THREAT_CONFIRMED') {
+    banner.className = 'verdict-confirmed';
+    banner.textContent = `🚨 THREAT CONFIRMED — Confidence ${Math.round(confidence*100)}% — Containment actions executed`;
+  } else {
+    banner.className = 'verdict-unconfirmed';
+    banner.textContent = `✅ Threat Unconfirmed — Confidence ${Math.round(confidence*100)}% — No action taken`;
+  }
+}
+
+// ── Start investigation ────────────────────────────────────────────────────────
+async function triggerInvestigation() {
+  const alertId = document.getElementById('alert-input').value.trim();
+  if (!alertId) { alert('Enter an Alert ID.'); return; }
+
+  // Reset UI
+  document.getElementById('trace-list').innerHTML = '<div class="empty-state"><div class="icon">⟳</div><div>Investigation starting…</div></div>';
+  document.getElementById('verdict-banner').style.display = 'none';
+  document.getElementById('hop-path').style.display = 'none';
+  document.getElementById('hop-chain').innerHTML = '';
+  attackPathNodes = [];
+  stepCount = 0;
+  maxHop = 0;
+  document.getElementById('step-count').textContent = '0 steps';
+  document.getElementById('stat-hops').textContent = '0';
+  setConfidence(0.5);
+  setStatus('running');
+  document.getElementById('btn-trigger').disabled = true;
+
+  // Close old SSE
+  if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+
+  try {
+    // Kick off the agent
+    await fetch(`${API}/trigger_investigation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alert_id: alertId }),
+    });
+
+    // Open SSE stream
+    currentEventSource = new EventSource(`${API}/stream_trace/${encodeURIComponent(alertId)}`);
+
+    currentEventSource.onmessage = async (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'done') {
+        currentEventSource.close();
+        currentEventSource = null;
+        setStatus('done');
+        document.getElementById('btn-trigger').disabled = false;
+        // Reload graph to get updated node statuses
+        await loadGraph();
+        // Fetch final trace for verdict
+        const tr = await fetch(`${API}/agent_trace`).then(r => r.json());
+        if (tr.verdict) showVerdict(tr.verdict, tr.confidence);
+        if (tr.graph_nodes_touched) highlightNodes(tr.graph_nodes_touched, []);
+        return;
+      }
+      if (data.type === 'error' || data.error) {
+        setStatus('error');
+        document.getElementById('btn-trigger').disabled = false;
+        return;
+      }
+      renderTraceStep(data);
+    };
+
+    currentEventSource.onerror = () => {
+      setStatus('error');
+      document.getElementById('btn-trigger').disabled = false;
+    };
+  } catch(err) {
+    console.error(err);
+    setStatus('error');
+    document.getElementById('btn-trigger').disabled = false;
+  }
+}
+
+// ── Clear ──────────────────────────────────────────────────────────────────────
+function clearAll() {
+  if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+  document.getElementById('trace-list').innerHTML = '<div class="empty-state"><div class="icon">🛡️</div><div>Cleared. Ready for new investigation.</div></div>';
+  document.getElementById('verdict-banner').style.display = 'none';
+  document.getElementById('hop-path').style.display = 'none';
+  document.getElementById('hop-chain').innerHTML = '';
+  attackPathNodes = [];
+  stepCount = 0; maxHop = 0;
+  document.getElementById('step-count').textContent = '0 steps';
+  document.getElementById('stat-hops').textContent = '0';
+  setConfidence(0.5);
+  setStatus('idle');
+  document.getElementById('btn-trigger').disabled = false;
+  if (cy) cy.nodes().forEach(n => n.data('highlighted', false));
+  if (cy) cy.edges().forEach(e => e.removeClass('highlighted'));
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Wire up buttons ────────────────────────────────────────────────────────────
+document.getElementById('btn-trigger').addEventListener('click', triggerInvestigation);
+document.getElementById('alert-input').addEventListener('keydown', e => { if (e.key === 'Enter') triggerInvestigation(); });
+document.getElementById('btn-refresh-graph').addEventListener('click', loadGraph);
+document.getElementById('btn-clear').addEventListener('click', clearAll);
+document.getElementById('btn-fit').addEventListener('click', () => cy && cy.fit(undefined, 40));
+document.getElementById('btn-layout').addEventListener('click', () => {
+  if (!cy) return;
+  cy.layout({ name: 'dagre', rankDir: 'LR', padding: 40, nodeSep: 50, rankSep: 100, animate: true, animationDuration: 500 }).run();
+});
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+(async () => {
+  await loadGraph();
+})();
+</script>
+</body>
+</html>
